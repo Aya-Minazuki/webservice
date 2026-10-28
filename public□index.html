@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>小鱼联机 RPG</title>
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;min-height:100vh;background:#141a24;color:#e8eef7;font-family:system-ui,sans-serif;display:flex;justify-content:center;padding:10px}
+  #app{width:100%;max-width:560px;display:flex;flex-direction:column;gap:8px}
+  h1{font-size:17px;margin:0;color:#8fd3ff}
+  #join{display:flex;gap:8px}
+  input{flex:1;padding:10px;border-radius:8px;border:1px solid #33405a;background:#101720;color:#e8eef7}
+  button{padding:9px 12px;border:0;border-radius:9px;background:#2c7be5;color:#fff;font-size:13px}
+  button:disabled{opacity:.32}
+  button.alt{background:#3a4557}
+  button.buy{background:#8a5cf6}
+  .card{background:#1d2531;border-radius:9px;padding:8px 10px;font-size:12px;line-height:1.55;margin-bottom:5px}
+  .card.me{outline:1px solid #2c7be5}
+  .card.down{opacity:.42}
+  #enemy{background:#1d2531;border-radius:9px;padding:9px 10px;font-size:13px}
+  #enemy.boss{outline:1px solid #e05c5c}
+  #log{min-height:110px;max-height:170px;background:#0f141c;border-radius:9px;padding:9px;font-size:12px;line-height:1.55;overflow-y:auto}
+  #log p{margin:0 0 3px}
+  .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}
+  .grid button{font-size:12px;padding:8px 4px}
+  .row{display:flex;gap:6px}
+  .row button{flex:1}
+  #hint{font-size:11px;opacity:.65}
+</style>
+</head>
+<body>
+<div id="app">
+  <h1>小鱼联机 RPG</h1>
+  <div id="join">
+    <input id="room" placeholder="房间号" value="fish">
+    <button id="connect">进入</button>
+  </div>
+  <div id="players"></div>
+  <div id="enemy">未连接</div>
+  <div id="log"></div>
+  <div id="hint"></div>
+  <div class="row">
+    <button id="attack" disabled>普通攻击</button>
+    <button id="potion" class="alt" disabled>喝药</button>
+    <button id="restart" class="alt" disabled>重开</button>
+  </div>
+  <div class="grid" id="skills"></div>
+  <div class="grid" id="shop"></div>
+</div>
+<script>
+const $ = (id) => document.getElementById(id);
+const roomEl = $('room'), connectBtn = $('connect');
+const playersEl = $('players'), enemyEl = $('enemy'), logEl = $('log'), hintEl = $('hint');
+const atkBtn = $('attack'), potionBtn = $('potion'), restartBtn = $('restart');
+const skillsEl = $('skills'), shopEl = $('shop');
+
+let ws = null;
+let mySeat = -1;
+
+function connect() {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  ws = new WebSocket(proto + '//' + location.host);
+  ws.onopen = () => {
+    connectBtn.disabled = true;
+    ws.send(JSON.stringify({ type: 'join', room: roomEl.value.trim() || 'fish' }));
+  };
+  ws.onmessage = (ev) => handle(JSON.parse(ev.data));
+  ws.onclose = () => { connectBtn.disabled = false; hintEl.textContent = '连接断开了。'; };
+}
+
+function handle(data) {
+  if (data.type === 'seat') { mySeat = data.seat; hintEl.textContent = '你是 ' + (mySeat + 1) + 'P'; return; }
+  if (data.type === 'error') { hintEl.textContent = data.message; connectBtn.disabled = false; return; }
+  if (data.type !== 'state') return;
+
+  const me = data.players.find((p) => p.seat === mySeat);
+
+  playersEl.innerHTML = '';
+  data.players.forEach((p) => {
+    const d = document.createElement('div');
+    d.className = 'card' + (p.seat === mySeat ? ' me' : '') + (p.hp <= 0 ? ' down' : '');
+    d.innerHTML = '<b>' + p.name + '</b>' + (p.seat === mySeat ? '（你）' : '') +
+      ' · Lv' + p.lv +
+      '<br>生命 ' + p.hp + '/' + p.max + ' · 攻击 ' + p.atk +
+      ' · 金币 ' + p.gold + ' · 药 ' + p.potions +
+      (p.weapon || p.armor ? '　武器+' + (p.weapon * 3) + ' 护甲+' + (p.armor * 12) : '');
+    playersEl.appendChild(d);
+  });
+
+  enemyEl.className = data.enemy && data.enemy.boss ? 'boss' : '';
+  enemyEl.textContent = data.enemy
+    ? '敌人：' + data.enemy.name + (data.enemy.boss ? '（BOSS）' : '') +
+      ' · ' + Math.max(0, data.enemy.hp) + '/' + data.enemy.max + ' HP'
+    : (data.win ? '通关了！' : '敌人：无');
+  hintEl.textContent = '已击杀 ' + data.kills + ' 只，' + data.bossAt + ' 只后 BOSS 出现' + (data.over ? ' · 本局结束' : '');
+
+  logEl.innerHTML = '';
+  data.logs.slice(-14).forEach((t) => {
+    const p = document.createElement('p');
+    p.textContent = t;
+    logEl.appendChild(p);
+  });
+  logEl.scrollTop = logEl.scrollHeight;
+
+  const alive = me && me.hp > 0 && !data.over;
+  atkBtn.disabled = !alive;
+  potionBtn.disabled = !alive || me.potions <= 0;
+  potionBtn.textContent = '喝药（' + (me ? me.potions : 0) + '）';
+  restartBtn.disabled = false;
+
+  skillsEl.innerHTML = '';
+  (me ? me.skills : []).forEach((s, i) => {
+    const b = document.createElement('button');
+    b.className = 'alt';
+    const locked = me.lv < s.unlock;
+    const cd = me.cds[i];
+    b.textContent = s.name + (locked ? '(Lv' + s.unlock + ')' : cd > 0 ? '(' + cd + ')' : '');
+    b.disabled = !alive || locked || cd > 0;
+    b.onclick = () => ws.send(JSON.stringify({ type: 'skill', index: i }));
+    skillsEl.appendChild(b);
+  });
+
+  shopEl.innerHTML = '';
+  const items = [
+    { id: 'potion', text: '买药 ' + data.shop.potion },
+    { id: 'weapon', text: '强化武器 ' + data.shop.weapon },
+    { id: 'armor', text: '强化护甲 ' + data.shop.armor }
+  ];
+  items.forEach((it) => {
+    const b = document.createElement('button');
+    b.className = 'buy';
+    b.textContent = it.text;
+    b.disabled = !me || me.gold < (it.id === 'potion' ? data.shop.potion : it.id === 'weapon' ? data.shop.weapon : data.shop.armor);
+    b.onclick = () => ws.send(JSON.stringify({ type: 'buy', item: it.id }));
+    shopEl.appendChild(b);
+  });
+}
+
+connectBtn.onclick = connect;
+atkBtn.onclick = () => ws.send(JSON.stringify({ type: 'attack' }));
+potionBtn.onclick = () => ws.send(JSON.stringify({ type: 'potion' }));
+restartBtn.onclick = () => ws.send(JSON.stringify({ type: 'restart' }));
+</script>
+</body>
+</html>
